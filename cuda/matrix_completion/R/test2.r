@@ -1,0 +1,8 @@
+comp<-read.table('compare2.txt',header=F)
+colnames(comp)<-c('example','qty','true','nn','mc')
+comp$nn_error<-(abs(comp$true-comp$nn)/comp$true)
+comp$mc_error<-(abs(comp$true-comp$mc)/comp$true)
+setEPS()
+postscript('errors.ps')
+plot(comp$mc_error,comp$nn_error,xlim=c(0,.5),ylim=c(0,.5))
+dev.off()
