@@ -7,6 +7,8 @@
 #include<map>
 #include"cublas_v2.h"
 #define BLOCK_SIZE 256
+#define idx(row,col) (col*n+row)
+
 using namespace std;
 
     
@@ -18,7 +20,12 @@ struct matrix_t{
     //cublasHandle_t handle = NULL;
     //float* dev_ptr = NULL;
     matrix_t(const char * inputfile,int rows,int cols);
-    void compute_union_col_indices();
+    void estimate_gaussian();
+    void populate_intersecting_cols(int row,bool * intersecting_cols);
+    void populate_intersecting_rows(int col,bool * intersecting_rows);
+    void populate_best_row_neighbors(float beta,int row,int col,bool * intersecting_cols, bool * best_row_neighbors);
+    void populate_best_col_neighbors(float beta,int col,int row,bool * intersecting_rows, bool * best_col_neighbors);
+    void populate_best_neighbors(bool * best_row_neighbors, bool * best_col_neighbors, bool * best_neighbors);
 
     ~matrix_t(){
         if(data!=NULL) delete[] data;
@@ -485,32 +492,128 @@ void cleanup(){
     printf("Freed all memory\n");
 }
 
-void matrix_t::compute_union_col_indices(){
-   bool * col_positive = new bool[m];
-   bool * row_positive = new bool[n];
-   memset(col_positive,0,sizeof(bool)*m);
-   memset(row_positive,0,sizeof(bool)*n);
-   for(int j=0;j<m;++j){
-      printf("At col %d\n",j);
-      for(int i=0;i<n;++i){
-         if(data[j*n+i]>0.0){
-            row_positive[i]=true;
-            col_positive[j]=true;
-            printf(" %d",i);
-         }
-      }
-      printf("\n");
-   }
-   printf("Row positive:");
-   for(int i=0;i<n;++i){
-      if(row_positive[i]) printf(" %d",i);
-   }
-   printf("\n");
-   printf("Col positive:");
-   for(int j=0;j<m;++j){
-      if(col_positive[j]) printf(" %d",j);
-   }
-   printf("\n");
+void matrix_t::populate_intersecting_cols(int row,bool * intersecting_cols){
+    for(int i=0;i<n;++i){
+        //printf("Populate intersecting on row %d anchor %d\n",i,row);
+        for(int j=0;j<m;++j){
+            if(data[idx(i,j)]>0 && data[idx(row,j)]>0){
+                intersecting_cols[idx(i,j)] = true;
+                //printf(" %d",j);
+            }
+        }
+        //printf("\n");
+    }
+}
+
+void matrix_t::populate_intersecting_rows(int col,bool * intersecting_rows){
+    for(int j=0;j<m;++j){
+        //printf("Populate intersecting on col %d anchor %d\n",j,col);
+        for(int i=0;i<n;++i){
+            if(data[idx(i,j)]>0 && data[idx(i,col)]>0){
+                intersecting_rows[idx(i,j)] = true;
+                //printf(" %d",i);
+            }
+        }
+        //printf("\n");
+    }
+}
+
+void matrix_t::populate_best_row_neighbors(float beta, int row,int col,bool * intersecting_cols, bool * best_row_neighbors){
+    //printf("Beta row at col %d\n",col);
+    for(int i=0;i<n;++i){
+        if(data[idx(i,col)]>0 && i!=row){
+            int support = 0;
+            for(int j=0;j<m;++j){
+                support+=intersecting_cols[idx(i,j)];
+            }
+            if(support>=beta){
+                best_row_neighbors[i] = true;
+                //printf(" %d",i);
+            }
+        }
+    }
+    //printf("\n");
+}
+
+void matrix_t::populate_best_col_neighbors(float beta, int col,int row,bool * intersecting_rows, bool * best_col_neighbors){
+    //printf("Beta col at row %d\n",row);
+    for(int j=0;j<m;++j){
+        if(data[idx(row,j)]>0 && j!=col){
+            int support = 0;
+            for(int i=0;i<n;++i){
+                support+=intersecting_rows[idx(i,j)];
+            }
+            if(support>=beta){
+                best_col_neighbors[j] = true;
+                //printf(" %d",j);
+            }
+        }
+    }
+    //printf("\n");
+}
+
+void matrix_t::populate_best_neighbors(bool * best_row_neighbors, bool * best_col_neighbors,bool * best_neighbors){
+    printf("Best neighbors:");
+    for(int j=0;j<m;++j){
+        for(int i=0;i<n;++i){
+            if(best_row_neighbors[i] && best_col_neighbors[j] && data[idx(i,j)]>0){
+                best_neighbors[idx(i,j)] = true;
+                printf(" %d,%d",i,j);
+            }
+        }
+    }
+    printf("\n");
+}
+
+void matrix_t::estimate_gaussian(){
+    bool * intersecting_cols = new bool[m*n];
+    bool * intersecting_rows = new bool[m*n];
+    bool * best_row_neighbors = new bool[n];
+    bool * best_col_neighbors = new bool[m];
+    bool * best_neighbors = new bool[n*m];
+    float beta = 5.0;
+    for(int row=0;row<n;++row){
+        memset(intersecting_cols,0,sizeof(bool)*m*n);
+        populate_intersecting_cols(row, intersecting_cols);
+        printf("At row %d\n",row);
+        for(int col=0;col<m;++col){
+            printf("At col %d\n",col);
+            memset(best_row_neighbors,0,sizeof(bool)*n);
+            populate_best_row_neighbors(beta, row, col, intersecting_cols, best_row_neighbors);
+            memset(intersecting_rows,0,sizeof(bool)*m*n);
+            populate_intersecting_rows(col, intersecting_rows);
+            memset(best_col_neighbors,0,sizeof(bool)*m);
+            populate_best_col_neighbors(beta, col,row, intersecting_rows, best_col_neighbors);
+            memset(best_neighbors,0,sizeof(bool)*n*m);
+            populate_best_neighbors(best_row_neighbors, best_col_neighbors,best_neighbors);
+        }
+    }
+    delete[] best_neighbors;
+    delete[] best_row_neighbors;
+    delete[] best_col_neighbors;
+    delete[] intersecting_cols;
+    delete[] intersecting_rows;
+//   for(int j=0;j<m;++j){
+//      printf("At col %d\n",j);
+//      for(int i=0;i<n;++i){
+//         if(data[j*n+i]>0.0){
+//            row_positive[i]=true;
+//            col_positive[j]=true;
+//            printf(" %d",i);
+//         }
+//      }
+//      printf("\n");
+//   }
+//   printf("Row positive:");
+//   for(int i=0;i<n;++i){
+//      if(row_positive[i]) printf(" %d",i);
+//   }
+//   printf("\n");
+//   printf("Col positive:");
+//   for(int j=0;j<m;++j){
+//      if(col_positive[j]) printf(" %d",j);
+//   }
+//   printf("\n");
          //if(j) printf(" ");
          //printf("%.2f",data[j*n+i]);
       //}
@@ -530,7 +633,7 @@ int main(int argc,char * argv[]){
     int n = atoi(argv[++arg]);
     int m = atoi(argv[++arg]);
     matrix_t * matrix = new matrix_t(inputfile,n,m);
-    matrix->compute_union_col_indices();
+    matrix->estimate_gaussian();
     //int rank = 1;
     //impute(matrix,rank);
     //cleanup();

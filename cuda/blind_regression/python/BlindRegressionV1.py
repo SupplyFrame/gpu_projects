@@ -217,33 +217,36 @@ class BlindRegression():
 				for v in range(self._dimension[0]):
 					#print("Evaluating at row",v)
 					intersect_col_entries.append(self._pos_col_entries_set_list[row].intersection(self._pos_col_entries_set_list[v]))
-				print("intersect_col_entries is ",str(intersect_col_entries))
+#					print("nonzer _entries is ",str(self._pos_col_entries_set_list[v]))
+					#print("intersect_col_entries is ",str(intersect_col_entries[v]))
 				# calculate "N2(i,j)"
 				intersect_row_entries = []
 				for j in range(self._dimension[1]):
 					#print("Evaluating at col",j)
 					intersect_row_entries.append(self._pos_row_entries_set_list[col].intersection(self._pos_row_entries_set_list[j]))
-				print("intersect_row_entries is ",str(intersect_row_entries))
+					#print("intersect_row_entries is ",str(sorted(intersect_row_entries[j])))
 
 				best_row_neighbors = set([other_row for other_row in self._pos_row_entries_set_list[col] if other_row != row and len(intersect_col_entries[other_row]) >= beta])
-				#print("Beta_row",str(best_row_neighbors))
+				#print("beta",beta,"Beta_row",str(sorted(best_row_neighbors)))
 				best_col_neighbors = set([other_col for other_col in self._pos_col_entries_set_list[row] if other_col != col and len(intersect_row_entries[other_col]) >= beta])
+				#print("beta",beta,"Beta_col",str(sorted(best_col_neighbors)))
 				#print("Beta_col",str(best_col_neighbors))
 
-				best_row_neighborsi = sorted([(v, j) for v in best_row_neighbors for j in best_col_neighbors if self._data_matrix[v][j] > 0], key=lambda x: x[1])
+				best_neighbor_tuples = sorted([(v, j) for v in best_row_neighbors for j in best_col_neighbors if self._data_matrix[v][j] > 0], key=lambda x: x[1])
 
-				#print("Beta_rowi",str(best_row_neighborsi))
-				if len(best_row_neighborsi) == 0:
+				#print("best neighbor tuples",str(best_neighbor_tuples))
+				print("best_neighbor_tuples length",str(len(best_neighbor_tuples)))
+				if len(best_neighbor_tuples) == 0:
 					continue
 
-				if len(best_row_neighborsi) > num_points:
-					best_row_neighborsi = nsmallest(num_points, best_row_neighborsi, key=lambda x: abs(x[1] - col))
-				#print("Beta_rowi is now",str(best_row_neighborsi))
+				if len(best_neighbor_tuples) > num_points:
+					best_neighbor_tuples = nsmallest(num_points, best_neighbor_tuples, key=lambda x: abs(x[1] - col))
+				print("num_points",num_points,"length",str(len(best_neighbor_tuples)),"best_neighbor_tuples",str(best_neighbor_tuples))
 
 				estimate = 0
 				total_weight = 0
 				print("Working on cache")
-				for (v, j) in best_row_neighborsi:
+				for (v, j) in best_neighbor_tuples:
 					if (row, v) in s_uv2_cache:
 						s_uv_square = s_uv2_cache[(row, v)]
 					elif (v, row) in s_uv2_cache:
