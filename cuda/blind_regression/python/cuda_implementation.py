@@ -5,6 +5,7 @@ import pickle
 import numpy as np
 from bisect import bisect_left
 from itertools import groupby
+#import pycuda.driver as cuda
 
 beta = 5
 lam = 1
@@ -22,11 +23,15 @@ def blind_regression_estimate(data_matrix):
 	return br_obj.estimate_gaussian_cache_2D_all(beta, lam, num_points)
 
 if __name__ == "__main__":
+	
+	#a = np.random.randn(4,4)
+	#a = a.astype(np.float32)
+	#a_gpu = cuda.mem_alloc(a.nbytes)
 	# TODO: implement CUDA
 	estimate_result = blind_regression_estimate(data_matrix)
-
-	
-	# write the result into a pickle file
-	with open(result_file, 'bw') as f:
-		pickle.dump(estimate_result, f)
-	f.close()
+#
+#	
+#	# write the result into a pickle file
+#	with open(result_file, 'bw') as f:
+#		pickle.dump(estimate_result, f)
+#	f.close()
