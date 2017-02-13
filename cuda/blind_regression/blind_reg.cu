@@ -25,7 +25,8 @@ struct matrix_t{
     void populate_intersecting_rows(int col,bool * intersecting_rows);
     void populate_best_row_neighbors(float beta,int row,int col,bool * intersecting_cols, bool * best_row_neighbors);
     void populate_best_col_neighbors(float beta,int col,int row,bool * intersecting_rows, bool * best_col_neighbors);
-    void populate_best_neighbors(bool * best_row_neighbors, bool * best_col_neighbors, bool * best_neighbors);
+    void populate_best_neighbors(int col, int limit,bool * best_row_neighbors, bool * best_col_neighbors, bool * best_neighbors);
+    float compute_square(int row,int col,bool * best_neighbors,bool * intersecting_cols,bool * intersecting_rows,float * row_cache,float * col_cache);
 
     ~matrix_t(){
         if(data!=NULL) delete[] data;
@@ -552,18 +553,98 @@ void matrix_t::populate_best_col_neighbors(float beta, int col,int row,bool * in
     //printf("\n");
 }
 
-void matrix_t::populate_best_neighbors(bool * best_row_neighbors, bool * best_col_neighbors,bool * best_neighbors){
-    printf("Best neighbors:");
-    for(int j=0;j<m;++j){
-        for(int i=0;i<n;++i){
-            if(best_row_neighbors[i] && best_col_neighbors[j] && data[idx(i,j)]>0){
-                best_neighbors[idx(i,j)] = true;
-                printf(" %d,%d",i,j);
+void matrix_t::populate_best_neighbors(int col,int limit,bool * best_row_neighbors, bool * best_col_neighbors,bool * best_neighbors){
+    bool debug = false;
+    if(debug)printf("Best neighbors:");
+    int count = 0;
+    int j = col;
+    int inc = 1;
+    bool moveup = false;
+    while(true){
+        if(j>=0 && j<m){
+            //printf("Checking col %d\n",j);
+            for(int i=0;i<n;++i){
+                if(best_row_neighbors[i] && best_col_neighbors[j] && data[idx(i,j)]>0){
+                    best_neighbors[idx(i,j)] = true;
+                    if(debug)printf(" %d,%d",i,j);
+                    ++count;
+                }
+                if(count>limit) break;
+            }
+        }
+        if(count>limit || ((col+inc)>=m && (col-inc)<0 )) break;
+        if(!moveup){
+            j = col-inc;
+            moveup = true;
+        }else{
+            j = col+inc;
+            moveup = false;
+            ++inc;
+        }
+    }
+    if(debug)printf("\n");
+}
+
+float matrix_t::compute_square(int row,int col,bool * best_neighbors,bool * intersecting_cols,bool * intersecting_rows,float * row_cache,float * col_cache){
+    float res = 0;
+    float lambda = 1;
+    float total_weight = 0;
+    bool debug = false;
+    if(debug) printf("Compute_square\n");
+
+    for(int i=0;i<n;++i){
+        for(int j=0;j<m;++j){
+            if(best_neighbors[idx(i,j)]){
+                float row_result = row_cache[idx(row,i)];
+                if(row_result==0.0){
+                    if(debug)printf("At i %d j %d\n",i,j);
+                    // compute row square
+                    int support = 0;
+                    for(int j1=0;j1<m;++j1){
+                        support+=intersecting_cols[idx(i,j1)];
+                        for(int j2=0;j2<m;++j2){ 
+                            if(intersecting_cols[idx(i,j1)] &&
+                            intersecting_cols[idx(i,j2)]){
+                                float diff = (data[idx(row,j1)] - data[idx(i,j1)])
+                                - (data[idx(row,j2)] - data[idx(i,j2)]);
+                                row_result+= diff * diff;
+                            }
+                        }
+                    }
+                    row_result/=2.0*support*(support-1);
+                    if(debug)printf("row result %.2f\n",row_result);
+                    row_cache[idx(row,i)]=row_result;
+                }
+                // compute col square
+                float col_result = col_cache[idx(col,j)];
+                if(col_result==0.0){
+                    int support = 0;
+                    for(int i1=0;i1<n;++i1){
+                        support+=intersecting_rows[idx(i1,j)];
+                        for(int i2=0;i2<n;++i2){ 
+                            if(intersecting_rows[idx(i1,j)] &&
+                            intersecting_rows[idx(i2,j)]){
+                                float diff = (data[idx(i1,col)] - data[idx(i1,j)])
+                                - (data[idx(i2,col)] - data[idx(i2,j)]);
+                                col_result+= diff * diff;
+                            }
+                        }
+                    }
+                    col_result/=2.0*support*(support-1);
+                    if(debug)printf("col result %.2f\n",col_result);
+                    col_cache[idx(col,j)] = col_result;
+                }
+                float row_col_result = row_result<col_result?row_result:col_result;
+                float weight_min = exp(-lambda * row_col_result);
+                if(debug)printf("weight_min %.2f\n",weight_min);
+                res+=weight_min* (data[idx(row,j)]+data[idx(i,col)]-data[idx(i,j)]);
+                total_weight += weight_min;
             }
         }
     }
-    printf("\n");
+    return res/total_weight;
 }
+
 
 void matrix_t::estimate_gaussian(){
     bool * intersecting_cols = new bool[m*n];
@@ -571,7 +652,14 @@ void matrix_t::estimate_gaussian(){
     bool * best_row_neighbors = new bool[n];
     bool * best_col_neighbors = new bool[m];
     bool * best_neighbors = new bool[n*m];
+    float * estimate = new float[n*m];
+    memset(estimate,0,sizeof(float)*m*n);
     float beta = 5.0;
+    int limit = 10000;
+    float * row_cache = new float[n*n];
+    memset(row_cache,0.0,sizeof(float)*n*n);
+    float * col_cache = new float[m*m];
+    memset(col_cache,0.0,sizeof(float)*m*m);
     for(int row=0;row<n;++row){
         memset(intersecting_cols,0,sizeof(bool)*m*n);
         populate_intersecting_cols(row, intersecting_cols);
@@ -585,7 +673,9 @@ void matrix_t::estimate_gaussian(){
             memset(best_col_neighbors,0,sizeof(bool)*m);
             populate_best_col_neighbors(beta, col,row, intersecting_rows, best_col_neighbors);
             memset(best_neighbors,0,sizeof(bool)*n*m);
-            populate_best_neighbors(best_row_neighbors, best_col_neighbors,best_neighbors);
+            populate_best_neighbors(col,limit,best_row_neighbors, best_col_neighbors,best_neighbors);
+            estimate[idx(row,col)] = compute_square(row,col,best_neighbors,intersecting_cols,intersecting_rows,row_cache,col_cache);
+            printf("estimate is %.2f\n",estimate[idx(row,col)]);
         }
     }
     delete[] best_neighbors;
