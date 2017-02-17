@@ -5,35 +5,60 @@
 #include<cuda_runtime.h>
 #include<gsl/gsl_cblas.h>
 #include<map>
+#include<set>
+#include<vector>
 #include"cublas_v2.h"
 #define BLOCK_SIZE 256
 #define idx(row,col) (col*n+row)
 
 using namespace std;
 
+typedef pair<int,int> int_pair_t;
+typedef vector<int> int_vec_t;
+typedef set<int> int_set_t;
+
+typedef vector<int_vec_t> int_vec_vec_t ;
+typedef vector<int_vec_vec_t> int_vec_vec_vec_t ;
+typedef vector<int_set_t> int_set_vec_t ;
+typedef vector<int_pair_t> int_pair_vec_t;
+typedef set<int_pair_t> int_pair_set_t;
     
 struct matrix_t{
+    float beta;
+    int limit;
     int n;
     int m;
     float * data;
-    bool * is_missing;
-    //cublasHandle_t handle = NULL;
-    //float* dev_ptr = NULL;
-    matrix_t(const char * inputfile,int rows,int cols);
-    void estimate_gaussian();
-    void populate_intersecting_cols(int row,bool * intersecting_cols);
-    void populate_intersecting_rows(int col,bool * intersecting_rows);
-    void populate_best_row_neighbors(float beta,int row,int col,bool * intersecting_cols, bool * best_row_neighbors);
-    void populate_best_col_neighbors(float beta,int col,int row,bool * intersecting_rows, bool * best_col_neighbors);
-    void populate_best_neighbors(int col, int limit,bool * best_row_neighbors, bool * best_col_neighbors, bool * best_neighbors);
-    float compute_square(int row,int col,bool * best_neighbors,bool * intersecting_cols,bool * intersecting_rows,float * row_cache,float * col_cache);
+    float * data_rowmajor;
+    float * data_colmajor;
 
-    ~matrix_t(){
-        if(data!=NULL) delete[] data;
-        if(is_missing!=NULL) delete[] is_missing;
-        //if(handle!=NULL) cublasDestroy(handle);
-        //if(dev_ptr!=NULL) cudaFree(dev_ptr);
-    }
+    int_pair_set_t positive_indices;
+
+    int_set_t ** positive_cols_indices2;
+    int_set_t ** positive_rows_indices2;
+
+    int_vec_t ** intersecting_cols_indices2;
+    int_vec_t *** intersecting_rows_indices_by_anchor2;
+
+    int_vec_t best_row_neighbors;
+    int_set_t best_col_neighbors;
+    int_pair_vec_t best_neighbors;
+
+    float * row_cache;
+    float * col_cache;
+
+    bool * row_cache_used;
+    bool * col_cache_used;
+
+    matrix_t(const char * inputfile,int rows,int cols);
+    ~matrix_t();
+    float * estimate_gaussian();
+    void populate_intersecting_cols(int row);
+    void populate_intersecting_rows(int col);
+    void populate_best_row_neighbors(int row,int col);
+    void populate_best_col_neighbors(int col,int row);
+    void populate_best_neighbors(int col);
+    float compute_square(int row,int col);
 };
 
 #define M 6
@@ -99,13 +124,6 @@ void reduction(int n,float * input, float *output){
 }
 
 
-float l2_norm(float * imputed,float * last_imputed,int n){
-    float norm = 0;
-    for(int i =0;i<n;++i){
-        norm+=(imputed[i]-last_imputed[i])*(imputed[i]-last_imputed[i]);
-    }
-    return sqrt(norm);
-}
 
 inline float runif(){
     return rand()/(RAND_MAX+1.0);
@@ -164,236 +182,6 @@ float * get_dev_ptr(const char * label,int rows,int cols,float * orig){
     printf("Storing new dev ptr of label %s\n",label);
     dev_ptr_map[label] = dev_ptr;
     return dev_ptr;
-}
-
-void nnmf(float * imputed,int rows,int cols,int rank){
-
-    bool demo = false;
-    if(demo){
-    
-      int lda = 3;
-      float A[] = { 0.11, 0.12, 0.13,
-                    0.21, 0.22, 0.23 };
-
-      int ldb = 2;
-  
-      float B[] = { 1011, 1012,
-                1021, 1022,
-                    1031, 1032 };
-
-      int ldc = 2;
-
-      float D[] = { 0.00, 0.00,0.0,
-                0.00, 0.00,0.0,
-                    0.00, 0.00,0.0 };
-  float C[] = { 0.00, 0.00,
-                    0.00, 0.00 };
-
-      /* Compute C = A B */
-
-      cblas_sgemm (CblasRowMajor, 
-               CblasTrans, CblasTrans, 3, 3, 2,
-                   1.0, A, lda, B, ldb, 0.0, D, 3);
-
-      printf ("[ %g, %g %g\n", D[0], D[1],D[2]);
-        printf ("  %g, %g %g \n", D[3], D[4],D[5]);
-          printf ("  %g, %g %g ]\n", D[6], D[7],D[8]);
-
-      cblas_sgemm (CblasRowMajor, 
-                   CblasNoTrans, CblasNoTrans, 2, 2, 3,
-               1.0, A, lda, B, ldb, 0.0, C, ldc);
-
-      printf ("[ %g, %g\n", C[0], C[1]);
-      printf ("  %g, %g ]\n", C[2], C[3]);
-    }
-
-
-    float w[rows*rank];
-    float h[rank*cols];
-    float wh[rows*cols];
-    float wh_last[rows*cols];
-    memset(wh_last,0,sizeof(wh_last));
-
-    for(int i=0;i<rows*rank;++i) w[i] = runif();
-    for(int i=0;i<rank*cols;++i) h[i] = runif();
-        //debug_matrix("w",w,rows,rank);
-        //debug_matrix("h",h,rank,cols);
-    
-    //for(int i=0;i<rows*cols;++i) wh[i] = 0;
-    int maxiter = 10;
-    for(int iter = 0;iter<maxiter;++iter){
-        float alpha = 1.0;
-        float beta = 0.0;
-
-        float h_num[rank*cols];
-        memset(h_num,0,sizeof(h_num));
-        cblas_sgemm(CblasColMajor,CblasTrans,CblasNoTrans,rank,cols,rows,alpha,w,rows,imputed,rows,beta,h_num,rank);
-        debug_matrix("h_num_cpu",h_num,rank,cols);
-
-        memset(h_num,0,sizeof(h_num));
-        float * dev_w  = get_dev_ptr("w",rows,rank,w);
-        float * dev_imputed = get_dev_ptr("imputed",rows,cols,imputed);
-        float * dev_h_num = get_dev_ptr("h_num",rank,cols,h_num);
-        stat = cublasSgemm(handle, CUBLAS_OP_T,CUBLAS_OP_N,rank,cols,rows,&alpha,dev_w,rows,dev_imputed,rows,&beta,dev_h_num,rank);
-        fetch_matrix(rank,cols,dev_h_num,h_num);
-        debug_matrix("h_num_gpu",h_num,rank,cols);
-
-        float wtw[rank*rank];
-        memset(wtw,0,sizeof(wtw));
-        cblas_sgemm(CblasColMajor,CblasTrans,CblasNoTrans,rank,rank,rows,1.0,w,rows,w,rows,0.0,wtw,rank);
-        debug_matrix("wtw_cpu",wtw,rank,rank);
-
-        float * dev_wtw = get_dev_ptr("wtw",rank,rank,wtw);
-        stat = cublasSgemm(handle, CUBLAS_OP_T,CUBLAS_OP_N,rank,rank,rows,&alpha,dev_w,rows,dev_w,rows,&beta,dev_wtw,rank);
-        fetch_matrix(rank,rank,dev_wtw,wtw);
-        debug_matrix("wtw_gpu",wtw,rank,rank);
-
-        float h_den[rank*cols];
-        memset(h_den,0,sizeof(h_den));
-        cblas_sgemm(CblasColMajor,CblasNoTrans,CblasNoTrans,rank,cols,rank,1.0,wtw,rank,h,rank,0.0,h_den,rank);
-        debug_matrix("h_den_cpu",h_den,rank,cols);
-
-        float * dev_h = get_dev_ptr("h",rank,cols,h);
-        float * dev_h_den = get_dev_ptr("h_den",rank,cols,h_den);
-        stat = cublasSgemm(handle, CUBLAS_OP_N,CUBLAS_OP_N,rank,cols,rank,&alpha,dev_wtw,rank,dev_h,rank,&beta,dev_h_den,rank);
-        fetch_matrix(rank,cols,dev_h_den,h_den);
-        debug_matrix("h_den_gpu",h_den,rank,cols);
-
-        for(int i=0;i<rank*cols;++i) h[i] *= h_num[i]/h_den[i];
-        debug_matrix("h_cpu",h,rank,cols);
-
-        //memset(h,0,sizeof(h));
-        //push_matrix(rank,cols,h,dev_h);
-        divide_matrix<<<(rank*cols+BLOCK_SIZE-1)/BLOCK_SIZE,BLOCK_SIZE >>>(rank*cols,dev_h_num,dev_h_den,dev_h);
-        fetch_matrix(rank,cols,dev_h,h);
-        debug_matrix("h_gpu",h,rank,cols);
-
-        float w_num[rows*rank];
-        memset(w_num,0,sizeof(w_num));
-        cblas_sgemm(CblasColMajor,CblasNoTrans,CblasTrans,rows,rank,cols,1.0,imputed,rows,h,rank,0.0,w_num,rows);
-        debug_matrix("w_num_cpu",w_num,rows,rank);
-
-        memset(w_num,0,sizeof(w_num));
-        //float * dev_imputed = get_dev_ptr("imputed",rows,cols,imputed);
-        //float * dev_h  = get_dev_ptr("h",rank,cols,h);
-        float * dev_w_num = get_dev_ptr("w_num",rows,rank,w_num);
-        stat = cublasSgemm(handle, CUBLAS_OP_N,CUBLAS_OP_T,rows,rank,cols,&alpha,dev_imputed,rows,dev_h,rank,&beta,dev_w_num,rows);
-        fetch_matrix(rows,rank,dev_w_num,w_num);
-        debug_matrix("w_num_gpu",w_num,rows,rank);
-
-        float hht[rank*rank];
-        memset(hht,0,sizeof(hht));
-        cblas_sgemm(CblasColMajor,CblasNoTrans,CblasTrans,rank,rank,cols,1.0,h,rank,h,rank,0.0,hht,rank);
-        debug_matrix("hht_cpu",hht,rank,rank);
-
-        memset(hht,0,sizeof(hht));
-        float * dev_hht  = get_dev_ptr("hht",rank,rank,hht);
-        stat = cublasSgemm(handle, CUBLAS_OP_N,CUBLAS_OP_T,rank,rank,cols,&alpha,dev_h,rank,dev_h,rank,&beta,dev_hht,rank);
-        fetch_matrix(rank,rank,dev_hht,hht);
-        debug_matrix("hht_gpu",hht,rank,rank);
-
-        float w_den[rows*rank];
-        memset(w_den,0,sizeof(w_den));
-        cblas_sgemm(CblasColMajor,CblasNoTrans,CblasNoTrans,rows,rank,rank,1.0,w,rows,hht,rank,0.0,w_den,rows);
-        debug_matrix("w_den_cpu",w_den,rows,rank);
-
-        memset(w_den,0,sizeof(w_den));
-        float * dev_w_den  = get_dev_ptr("w_den",rows,rank,w_den);
-        stat = cublasSgemm(handle, CUBLAS_OP_N,CUBLAS_OP_N,rows,rank,rank,&alpha,dev_w,rows,dev_hht,rank,&beta,dev_w_den,rows);
-        fetch_matrix(rows,rank,dev_w_den,w_den);
-        debug_matrix("w_den_gpu",w_den,rows,rank);
-
-        for(int i=0;i<rows*rank;++i) w[i] *= w_num[i]/w_den[i];
-        debug_matrix("w_cpu",w,rows,rank);
-        //push_matrix(rows,rank,w,dev_w);
-        divide_matrix<<<(rows*rank+BLOCK_SIZE-1)/BLOCK_SIZE,BLOCK_SIZE >>>(rows*rank,dev_w_num,dev_w_den,dev_w);
-        fetch_matrix(rows,rank,dev_w,w);
-        debug_matrix("w_gpu",w,rows,rank);
-
-        memset(wh,0,sizeof(wh));
-        cblas_sgemm(CblasColMajor,CblasNoTrans,CblasNoTrans,rows,cols,rank,1.0,w,rows,h,rank,0.0,wh,rows);
-        debug_matrix("wh_cpu",wh,rows,cols);
-
-        memset(wh,0,sizeof(wh));
-        float * dev_wh  = get_dev_ptr("wh",rows,cols,wh);
-        stat = cublasSgemm(handle, CUBLAS_OP_N,CUBLAS_OP_N,rows,cols,rank,&alpha,dev_w,rows,dev_h,rank,&beta,dev_wh,rows);
-
-        fetch_matrix(rows,cols,dev_wh,wh);
-        debug_matrix("wh_gpu",wh,rows,cols);
-
-        float norm = l2_norm(wh,wh_last,rows*cols);
-        printf("l2 norm cpu %f\n",norm);
-        float * dev_wh_last  = get_dev_ptr("wh_last",rows,cols,wh_last);
-        float wh_diff[rows*cols];
-        memset(wh_diff,0,sizeof(wh_diff));
-        float * dev_wh_diff  = get_dev_ptr("wh_diff",rows,cols,wh_diff);
-        float wh_norm[rows*cols];
-        memset(wh_norm,0,sizeof(wh_norm));
-        float * dev_wh_norm  = get_dev_ptr("wh_norm",rows,cols,wh_norm);
-        int n = rows*cols;
-        int thread_blocks = (n+BLOCK_SIZE-1)/BLOCK_SIZE;
-        printf("For n %d, Launching %d thread blocks\n",n,thread_blocks);
-        diff_matrix<<<thread_blocks,BLOCK_SIZE >>>(n,dev_wh_last,dev_wh,dev_wh_diff);
-        fetch_matrix(rows,cols,dev_wh_diff,wh_diff);
-        float gpu_norm = 0;
-        for(int j=0;j<rows*cols;++j){
-            gpu_norm+=wh_diff[j];
-        }
-        gpu_norm = sqrt(gpu_norm);
-        printf("l2 norm gpu 1 %f\n",gpu_norm);
-        float * dev_input = dev_wh_diff;
-        float * dev_output = dev_wh_norm;
-        while(thread_blocks){
-            printf("Now launching %d thread blocks with n %d\n",thread_blocks,n);
-            reduction<<<thread_blocks,BLOCK_SIZE >>>(n,dev_input,dev_output);
-            n = thread_blocks>1?thread_blocks:0;
-            thread_blocks = n?(n+BLOCK_SIZE-1)/BLOCK_SIZE:0;
-            if(thread_blocks){
-                printf("Swapping!\n");
-                float * temp = dev_input;
-                dev_input = dev_output;
-                dev_output = temp;
-            }
-        }
-        fetch_matrix(rows,cols,dev_output,wh_norm);
-        wh_norm[0] = sqrt(wh_norm[0]);
-        debug_matrix("l2 norm gpu", wh_norm,1,1);
-        //printf("l2 norm gpu %f\n",norm);
-        printf("Iteration %d: Inner L2 norm of diff %f\n",iter,norm);
-        for(int i=0;i<rows*cols;++i) wh_last[i] = wh[i];
-        n = rows*cols;
-        thread_blocks = (n+BLOCK_SIZE-1)/BLOCK_SIZE;
-        copy_matrix<<<thread_blocks,BLOCK_SIZE >>>(n,dev_wh,dev_wh_last);
-        exit(0);
-    }
-    for(int i=0;i<rows*cols;++i) imputed[i] = wh_last[i] ;
-}
-
-void impute(matrix_t * matrix,int rank){
-    srand(1);
-    int n = matrix->n;
-    int m = matrix->m;
-    bool * is_missing = matrix->is_missing;
-    float * imputed = matrix->data;
-    float * original = new float[n*m];
-    float * last_imputed = new float[n*m];
-    for(int i=0;i<n*m;++i){
-        if(is_missing[i]) imputed[i] = 0;
-        last_imputed[i] = original[i] = imputed[i];
-    }
-    int max_iter=100;
-    for(int iter=0;iter<max_iter;++iter){
-        nnmf(imputed,n,m,rank);
-        for(int i=0;i<n*m;++i){
-            if(!is_missing[i]) imputed[i] = original[i];
-        }
-        float diff = l2_norm(imputed,last_imputed,n*m);
-        printf("Iteration %d Outer L2 norm of diff %f\n",iter, diff);
-        if(diff<.01) break;
-        for(int i=0;i<n*m;++i){
-            last_imputed[i] = imputed[i];
-        }
-    }
 }
 
 int gpu_demo(){
@@ -460,10 +248,37 @@ int gpu_demo(){
 }
 
 matrix_t::matrix_t(const char * inputfile,int rows,int cols){
+    beta = 5.0;
+    limit = 10000;
     n = rows;
     m = cols;
     data = new float[rows*cols];
-    is_missing = new bool[rows*cols];
+    data_rowmajor = new float[rows*cols];
+    data_colmajor = new float[cols*rows];
+    positive_cols_indices2 = new int_set_t*[n];
+    intersecting_cols_indices2 = new int_vec_t*[n];
+    for(int i=0;i<n;++i){
+        vector<int> v;
+        set<int> s;
+        intersecting_cols_indices2[i] = new vector<int>;
+        positive_cols_indices2[i] = new set<int>;
+    }
+    positive_rows_indices2 = new int_set_t*[m];
+    intersecting_rows_indices_by_anchor2 = new int_vec_t**[m];
+    for(int j=0;j<m;++j){
+        set<int> s;
+        positive_rows_indices2[j] = new set<int>;
+        vector<int> v;
+        intersecting_rows_indices_by_anchor2[j] = new vector<int>*[m];
+        for(int k=0;k<m;++k){
+            intersecting_rows_indices_by_anchor2[j][k] = new vector<int>;
+        }
+    }
+    row_cache = new float[n*n];
+    row_cache_used = new bool[n*n];
+    col_cache = new float[m*m];
+    col_cache_used = new bool[n*n];
+
     FILE * file_ptr = fopen(inputfile,"r");
     if(file_ptr==NULL) {
         printf("Cannot open %s\n",inputfile);
@@ -471,17 +286,27 @@ matrix_t::matrix_t(const char * inputfile,int rows,int cols){
     }
     for(int i=0;i<rows;++i){
         for(int j=0;j<cols;++j){
-            fscanf(file_ptr,"%f",data+(j*rows+i));
-            is_missing[j*rows+i] = data[j*rows+i]<0?true:false;
+            float f;
+            fscanf(file_ptr,"%f",&f);
+            data[idx(i,j)] = f;
+            data_rowmajor[i*cols+j] = f; 
+            data_colmajor[j*rows+i] = f; 
+            if(f>0){
+                positive_indices.insert(make_pair(i,j));
+                positive_cols_indices2[i]->insert(j);
+                positive_rows_indices2[j]->insert(i);
+            }
         }
     }
-    //debug_matrix("After read",matrix->data,rows,cols);
     fclose(file_ptr);
     cublasStatus_t cublas_stat = cublasCreate(&handle);
     if(cublas_stat!=CUBLAS_STATUS_SUCCESS){
 	printf("CUBLAS initialization failed.\n");
         exit(1);
     }
+}
+
+matrix_t::~matrix_t(){
 }
 
 void cleanup(){
@@ -493,83 +318,90 @@ void cleanup(){
     printf("Freed all memory\n");
 }
 
-void matrix_t::populate_intersecting_cols(int row,bool * intersecting_cols){
+void matrix_t::populate_intersecting_cols(int row){
+    bool debug = false;
+    if(debug) printf("Intersecting cols at row %d\n",row);
     for(int i=0;i<n;++i){
-        //printf("Populate intersecting on row %d anchor %d\n",i,row);
-        for(int j=0;j<m;++j){
-            if(data[idx(i,j)]>0 && data[idx(row,j)]>0){
-                intersecting_cols[idx(i,j)] = true;
-                //printf(" %d",j);
+        if(debug)printf("Populate intersecting on row %d anchor %d\n",i,row);
+        intersecting_cols_indices2[i]->clear();
+        for(int_set_t::iterator it = positive_cols_indices2[i]->begin();
+        it!=positive_cols_indices2[i]->end();++it){
+            int col = *it;
+            if(positive_cols_indices2[row]->find(col)!=positive_cols_indices2[row]->end()){
+                if(debug)printf("Adding at col %d\n",col);
+                intersecting_cols_indices2[i]->push_back(col);
             }
         }
-        //printf("\n");
     }
 }
 
-void matrix_t::populate_intersecting_rows(int col,bool * intersecting_rows){
+void matrix_t::populate_intersecting_rows(int col){
+    bool debug = false;
+    if(debug) printf("Intersecting rows at anchor col %d\n",col);
     for(int j=0;j<m;++j){
-        //printf("Populate intersecting on col %d anchor %d\n",j,col);
-        for(int i=0;i<n;++i){
-            if(data[idx(i,j)]>0 && data[idx(i,col)]>0){
-                intersecting_rows[idx(i,j)] = true;
-                //printf(" %d",i);
+        if(debug)printf("Populate intersecting on col %d anchor %d\n",j,col);
+        intersecting_rows_indices_by_anchor2[col][j]->clear();
+        for(int_set_t::iterator it = positive_rows_indices2[j]->begin();
+        it!=positive_rows_indices2[j]->end();++it){
+            int row = *it;
+            if(positive_rows_indices2[col]->find(row)!=positive_rows_indices2[col]->end()){
+                intersecting_rows_indices_by_anchor2[col][j]->push_back(row);
             }
+            if(debug)printf("Col %d is size %d\n",j,(int)intersecting_rows_indices_by_anchor2[col][j]->size());
         }
-        //printf("\n");
     }
 }
 
-void matrix_t::populate_best_row_neighbors(float beta, int row,int col,bool * intersecting_cols, bool * best_row_neighbors){
-    //printf("Beta row at col %d\n",col);
-    for(int i=0;i<n;++i){
-        if(data[idx(i,col)]>0 && i!=row){
-            int support = 0;
-            for(int j=0;j<m;++j){
-                support+=intersecting_cols[idx(i,j)];
-            }
-            if(support>=beta){
-                best_row_neighbors[i] = true;
-                //printf(" %d",i);
-            }
+void matrix_t::populate_best_row_neighbors(int anchor_row,int col){
+    bool debug = false;
+    if(debug) printf("At beta %.2f best row neighbors at col %d\n",beta,col);
+    best_row_neighbors.clear();
+    for(int_set_t::iterator it = positive_rows_indices2[col]->begin();
+    it!=positive_rows_indices2[col]->end();++it){
+        int row = *it;
+        if(row!=anchor_row && intersecting_cols_indices2[row]->size()>=beta){
+            if(debug)printf("Adding best row neighbor %d\n",row);
+            best_row_neighbors.push_back(row);
         }
     }
-    //printf("\n");
 }
 
-void matrix_t::populate_best_col_neighbors(float beta, int col,int row,bool * intersecting_rows, bool * best_col_neighbors){
-    //printf("Beta col at row %d\n",row);
-    for(int j=0;j<m;++j){
-        if(data[idx(row,j)]>0 && j!=col){
-            int support = 0;
-            for(int i=0;i<n;++i){
-                support+=intersecting_rows[idx(i,j)];
-            }
-            if(support>=beta){
-                best_col_neighbors[j] = true;
-                //printf(" %d",j);
-            }
+void matrix_t::populate_best_col_neighbors(int anchor_col,int row){
+    bool debug = false;
+    if(debug) printf("best col neighbors at row %d\n",row);
+    best_col_neighbors.clear();
+    for(int_set_t::iterator it = positive_cols_indices2[row]->begin();
+    it!=positive_cols_indices2[row]->end();++it){
+        int col = *it;
+        if(col!=anchor_col && intersecting_rows_indices_by_anchor2[anchor_col][col]->size()>=beta){
+            if(debug)printf("Adding best col neighbor %d\n",col);
+            best_col_neighbors.insert(col);
         }
     }
-    //printf("\n");
 }
 
-void matrix_t::populate_best_neighbors(int col,int limit,bool * best_row_neighbors, bool * best_col_neighbors,bool * best_neighbors){
+void matrix_t::populate_best_neighbors(int col){
     bool debug = false;
     if(debug)printf("Best neighbors:");
     int count = 0;
     int j = col;
     int inc = 1;
     bool moveup = false;
+    best_neighbors.clear();
     while(true){
         if(j>=0 && j<m){
-            //printf("Checking col %d\n",j);
-            for(int i=0;i<n;++i){
-                if(best_row_neighbors[i] && best_col_neighbors[j] && data[idx(i,j)]>0){
-                    best_neighbors[idx(i,j)] = true;
-                    if(debug)printf(" %d,%d",i,j);
-                    ++count;
+            if(best_col_neighbors.find(j)!=best_col_neighbors.end()){
+                for(int_vec_t::iterator it = best_row_neighbors.begin();
+                it!=best_row_neighbors.end();++it){
+                    int i = *it;
+                    if(positive_indices.find(make_pair(i,j))!=
+                    positive_indices.end()){
+                        best_neighbors.push_back(make_pair(i,j));
+                        if(debug)printf(" %d,%d",i,j);
+                        ++count;
+                    }
+                    if(count>limit) break;
                 }
-                if(count>limit) break;
             }
         }
         if(count>limit || ((col+inc)>=m && (col-inc)<0 )) break;
@@ -583,134 +415,113 @@ void matrix_t::populate_best_neighbors(int col,int limit,bool * best_row_neighbo
         }
     }
     if(debug)printf("\n");
+    if(debug)printf("Total best neighbors: %d\n",(int)best_neighbors.size());
 }
 
-float matrix_t::compute_square(int row,int col,bool * best_neighbors,bool * intersecting_cols,bool * intersecting_rows,float * row_cache,float * col_cache){
+float matrix_t::compute_square(int row,int col){
     float res = 0;
     float lambda = 1;
     float total_weight = 0;
     bool debug = false;
     if(debug) printf("Compute_square\n");
 
-    for(int i=0;i<n;++i){
-        for(int j=0;j<m;++j){
-            if(best_neighbors[idx(i,j)]){
-                float row_result = row_cache[idx(row,i)];
-                if(row_result==0.0){
-                    if(debug)printf("At i %d j %d\n",i,j);
-                    // compute row square
-                    int support = 0;
-                    for(int j1=0;j1<m;++j1){
-                        support+=intersecting_cols[idx(i,j1)];
-                        for(int j2=0;j2<m;++j2){ 
-                            if(intersecting_cols[idx(i,j1)] &&
-                            intersecting_cols[idx(i,j2)]){
-                                float diff = (data[idx(row,j1)] - data[idx(i,j1)])
-                                - (data[idx(row,j2)] - data[idx(i,j2)]);
-                                row_result+= diff * diff;
-                            }
-                        }
-                    }
-                    row_result/=2.0*support*(support-1);
-                    if(debug)printf("row result %.2f\n",row_result);
-                    row_cache[idx(row,i)]=row_result;
+    for(int_pair_vec_t::iterator it = best_neighbors.begin();
+    it!=best_neighbors.end();++it){
+        int i = it->first;
+        int j = it->second;
+        float row_result = 0.0;
+        if(row_cache_used[idx(row,i)]){
+            row_result = row_cache[idx(row,i)];
+        }else{
+            // compute row square
+            int support = intersecting_cols_indices2[i]->size();
+            for(int_vec_t::iterator it1 = intersecting_cols_indices2[i]->begin();
+            it1!=intersecting_cols_indices2[i]->end();++it1){
+                for(int_vec_t::iterator it2 = 
+                intersecting_cols_indices2[i]->begin();
+                it2!=intersecting_cols_indices2[i]->end();++it2){
+                    int j1 = *it1;
+                    int j2 = *it2;
+                    float diff = 
+                    (data[idx(row,j1)] - data[idx(i,j1)])
+                    - (data[idx(row,j2)] - data[idx(i,j2)]);
+                    row_result+= diff * diff;
                 }
-                // compute col square
-                float col_result = col_cache[idx(col,j)];
-                if(col_result==0.0){
-                    int support = 0;
-                    for(int i1=0;i1<n;++i1){
-                        support+=intersecting_rows[idx(i1,j)];
-                        for(int i2=0;i2<n;++i2){ 
-                            if(intersecting_rows[idx(i1,j)] &&
-                            intersecting_rows[idx(i2,j)]){
-                                float diff = (data[idx(i1,col)] - data[idx(i1,j)])
-                                - (data[idx(i2,col)] - data[idx(i2,j)]);
-                                col_result+= diff * diff;
-                            }
-                        }
-                    }
-                    col_result/=2.0*support*(support-1);
-                    if(debug)printf("col result %.2f\n",col_result);
-                    col_cache[idx(col,j)] = col_result;
-                }
-                float row_col_result = row_result<col_result?row_result:col_result;
-                float weight_min = exp(-lambda * row_col_result);
-                if(debug)printf("weight_min %.2f\n",weight_min);
-                res+=weight_min* (data[idx(row,j)]+data[idx(i,col)]-data[idx(i,j)]);
-                total_weight += weight_min;
             }
+            row_result/=2.0*support*(support-1);
+            if(debug)printf("row result %.2f\n",row_result);
+            row_cache[idx(row,i)]=row_result;
+            row_cache_used[idx(row,i)]=true;
         }
+        // compute col square
+        float col_result = 0.0;
+        if(col_cache_used[idx(col,j)]){
+            col_result = col_cache[idx(col,j)];
+        }else{
+            int support = intersecting_rows_indices_by_anchor2[col][j]->size();
+            for(int_vec_t::iterator it1 = 
+            intersecting_rows_indices_by_anchor2[col][j]->begin();
+            it1!=intersecting_rows_indices_by_anchor2[col][j]->end();++it1){
+                for(int_vec_t::iterator it2 = 
+                intersecting_rows_indices_by_anchor2[col][j]->begin();
+                it2!=intersecting_rows_indices_by_anchor2[col][j]->end();++it2){
+                    int i1 = *it1;
+                    int i2 = *it2;
+                    float diff = (data[idx(i1,col)] - data[idx(i1,j)])
+                    - (data[idx(i2,col)] - data[idx(i2,j)]);
+                    col_result+= diff * diff;
+                }
+            }
+
+            col_result/=2.0*support*(support-1);
+            if(debug)printf("col result %.2f\n",col_result);
+            col_cache[idx(col,j)] = col_result;
+            col_cache_used[idx(col,j)] = true;
+        }
+        float row_col_result = row_result<col_result?row_result:col_result;
+        float weight_min = exp(-lambda * row_col_result);
+        if(debug)printf("weight_min %.2f\n",weight_min);
+        res+=weight_min* (data[idx(row,j)]+data[idx(i,col)]-data[idx(i,j)]);
+        total_weight += weight_min;
     }
-    return res/total_weight;
+    return total_weight==0?0:res/total_weight;
 }
 
 
-void matrix_t::estimate_gaussian(){
-    bool * intersecting_cols = new bool[m*n];
-    bool * intersecting_rows = new bool[m*n];
-    bool * best_row_neighbors = new bool[n];
-    bool * best_col_neighbors = new bool[m];
-    bool * best_neighbors = new bool[n*m];
-    float * estimate = new float[n*m];
-    memset(estimate,0,sizeof(float)*m*n);
-    float beta = 5.0;
-    int limit = 10000;
-    float * row_cache = new float[n*n];
+float * matrix_t::estimate_gaussian(){
+    bool debug = true;
     memset(row_cache,0.0,sizeof(float)*n*n);
-    float * col_cache = new float[m*m];
+    memset(row_cache_used,0,sizeof(bool)*n*n);
     memset(col_cache,0.0,sizeof(float)*m*m);
+    memset(col_cache_used,0,sizeof(bool)*m*m);
+    float * estimate = new float[n*m];
+    memset(estimate,0,sizeof(float)*n*m);
     for(int row=0;row<n;++row){
-        memset(intersecting_cols,0,sizeof(bool)*m*n);
-        populate_intersecting_cols(row, intersecting_cols);
-        printf("At row %d\n",row);
+        if(debug)printf("At row %d\n",row);
+        populate_intersecting_cols(row);
         for(int col=0;col<m;++col){
-            printf("At col %d\n",col);
-            memset(best_row_neighbors,0,sizeof(bool)*n);
-            populate_best_row_neighbors(beta, row, col, intersecting_cols, best_row_neighbors);
-            memset(intersecting_rows,0,sizeof(bool)*m*n);
-            populate_intersecting_rows(col, intersecting_rows);
-            memset(best_col_neighbors,0,sizeof(bool)*m);
-            populate_best_col_neighbors(beta, col,row, intersecting_rows, best_col_neighbors);
-            memset(best_neighbors,0,sizeof(bool)*n*m);
-            populate_best_neighbors(col,limit,best_row_neighbors, best_col_neighbors,best_neighbors);
-            estimate[idx(row,col)] = compute_square(row,col,best_neighbors,intersecting_cols,intersecting_rows,row_cache,col_cache);
-            printf("estimate is %.2f\n",estimate[idx(row,col)]);
+            //if(debug)printf("At col %d\n",col);
+            double start = clock();
+            if(row==0){
+                populate_intersecting_rows(col);
+                //printf("A Elapsed: %.2f\n",(clock()-start));
+            }
+            //start = clock();
+            populate_best_row_neighbors(row, col);
+            //printf("B Elapsed: %.2f\n",(clock()-start));
+            populate_best_col_neighbors(col, row);
+            //printf("C Elapsed: %.2f\n",(clock()-start));
+            populate_best_neighbors(col);
+            //printf("D Elapsed: %.2f\n",(clock()-start));
+            estimate[idx(row,col)] = compute_square(row,col);
+            if(debug && (col % 100 == 0)){
+                printf(" col %d, best neighbors %d, estimate %.2f\n",col,(int)best_neighbors.size(),estimate[idx(row,col)]);
+                printf("Elapsed: %.2f\n",(clock()-start));
+            }
         }
+
     }
-    delete[] best_neighbors;
-    delete[] best_row_neighbors;
-    delete[] best_col_neighbors;
-    delete[] intersecting_cols;
-    delete[] intersecting_rows;
-//   for(int j=0;j<m;++j){
-//      printf("At col %d\n",j);
-//      for(int i=0;i<n;++i){
-//         if(data[j*n+i]>0.0){
-//            row_positive[i]=true;
-//            col_positive[j]=true;
-//            printf(" %d",i);
-//         }
-//      }
-//      printf("\n");
-//   }
-//   printf("Row positive:");
-//   for(int i=0;i<n;++i){
-//      if(row_positive[i]) printf(" %d",i);
-//   }
-//   printf("\n");
-//   printf("Col positive:");
-//   for(int j=0;j<m;++j){
-//      if(col_positive[j]) printf(" %d",j);
-//   }
-//   printf("\n");
-         //if(j) printf(" ");
-         //printf("%.2f",data[j*n+i]);
-      //}
-      //printf("\n");
-   //}
-   
-	
+    return estimate;
 }
     
 int main(int argc,char * argv[]){
@@ -723,7 +534,17 @@ int main(int argc,char * argv[]){
     int n = atoi(argv[++arg]);
     int m = atoi(argv[++arg]);
     matrix_t * matrix = new matrix_t(inputfile,n,m);
-    matrix->estimate_gaussian();
+    float * estimate = matrix->estimate_gaussian();
+    FILE * pfile = fopen("estimate.txt","w");
+    for(int i=0;i<n;++i){
+        for(int j=0;j<m;++j){
+            if(j) fprintf(pfile,"\t");
+            fprintf(pfile,"%.2f",estimate[idx(i,j)]);
+        }
+        fprintf(pfile,"\n");
+    }
+
+    fclose(pfile);
     //int rank = 1;
     //impute(matrix,rank);
     //cleanup();
