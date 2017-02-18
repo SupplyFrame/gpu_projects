@@ -33,6 +33,7 @@ struct matrix_t{
     float * data_colmajor;
 
     int_pair_set_t positive_indices;
+    bool * positive_indices_mat;
 
     int_set_t ** positive_cols_indices2;
     int_set_t ** positive_rows_indices2;
@@ -41,7 +42,8 @@ struct matrix_t{
     int_vec_t *** intersecting_rows_indices_by_anchor2;
 
     int_vec_t best_row_neighbors;
-    int_set_t best_col_neighbors;
+    //int_set_t best_col_neighbors;
+    bool * best_col_neighbors;
     int_pair_vec_t best_neighbors;
 
     float * row_cache;
@@ -253,9 +255,12 @@ matrix_t::matrix_t(const char * inputfile,int rows,int cols){
     n = rows;
     m = cols;
     data = new float[rows*cols];
+    best_col_neighbors = new bool[m];
     data_rowmajor = new float[rows*cols];
     data_colmajor = new float[cols*rows];
     positive_cols_indices2 = new int_set_t*[n];
+    positive_indices_mat = new bool[n*m];
+    memset(positive_indices_mat,0,sizeof(bool)*n*m);
     intersecting_cols_indices2 = new int_vec_t*[n];
     for(int i=0;i<n;++i){
         vector<int> v;
@@ -295,6 +300,7 @@ matrix_t::matrix_t(const char * inputfile,int rows,int cols){
                 positive_indices.insert(make_pair(i,j));
                 positive_cols_indices2[i]->insert(j);
                 positive_rows_indices2[j]->insert(i);
+                positive_indices_mat[idx(i,j)] = true;
             }
         }
     }
@@ -369,13 +375,15 @@ void matrix_t::populate_best_row_neighbors(int anchor_row,int col){
 void matrix_t::populate_best_col_neighbors(int anchor_col,int row){
     bool debug = false;
     if(debug) printf("best col neighbors at row %d\n",row);
-    best_col_neighbors.clear();
+    memset(best_col_neighbors,0,sizeof(bool)*m);
+    //best_col_neighbors.clear();
     for(int_set_t::iterator it = positive_cols_indices2[row]->begin();
     it!=positive_cols_indices2[row]->end();++it){
         int col = *it;
         if(col!=anchor_col && intersecting_rows_indices_by_anchor2[anchor_col][col]->size()>=beta){
             if(debug)printf("Adding best col neighbor %d\n",col);
-            best_col_neighbors.insert(col);
+            //best_col_neighbors.insert(col);
+            best_col_neighbors[col] = true;
         }
     }
 }
@@ -388,14 +396,16 @@ void matrix_t::populate_best_neighbors(int col){
     int inc = 1;
     bool moveup = false;
     best_neighbors.clear();
+    //return;
     while(true){
         if(j>=0 && j<m){
-            if(best_col_neighbors.find(j)!=best_col_neighbors.end()){
+            if(best_col_neighbors[j]){
                 for(int_vec_t::iterator it = best_row_neighbors.begin();
                 it!=best_row_neighbors.end();++it){
                     int i = *it;
-                    if(positive_indices.find(make_pair(i,j))!=
-                    positive_indices.end()){
+                    //if(positive_indices.find(make_pair(i,j))!=
+                    //positive_indices.end()){
+                    if(positive_indices_mat[idx(i,j)]){
                         best_neighbors.push_back(make_pair(i,j));
                         if(debug)printf(" %d,%d",i,j);
                         ++count;
@@ -514,7 +524,7 @@ float * matrix_t::estimate_gaussian(){
             populate_best_neighbors(col);
             //printf("D Elapsed: %.2f\n",(clock()-start));
             estimate[idx(row,col)] = compute_square(row,col);
-            if(debug && (col % 100 == 0)){
+            if(debug && (col % 1000 == 0)){
                 printf(" col %d, best neighbors %d, estimate %.2f\n",col,(int)best_neighbors.size(),estimate[idx(row,col)]);
                 printf("Elapsed: %.2f\n",(clock()-start));
             }
