@@ -1,3 +1,17 @@
+struct model_t{
+  model_t(vector<int> inner_layer_dims);
+  float *** weights = NULL;
+  float *** weights_deltas = NULL;
+  //float ** residuals = NULL;
+  float ran();
+  int total_inner_layers;
+  vector<int> inner_layer_dims;
+  ~model_t();
+  void init_weights();
+  void init_weights_deltas();
+  void update_weights();
+};
+
 class nn_t{
 public:
   nn_t(vector<int> inner_layer_dims,int label, float * first_layer);
@@ -5,6 +19,10 @@ public:
   float get_error();
   void propagate_forward();
   ~nn_t();
+  void set_model(model_t * model);
+  // use the delta rule
+  void update_errors();
+
   static void read_input(int n, int p,const char * labels, const char * features, int * & label_data, float * & feature_data){
     ifstream ifs_label,ifs_feature;
     ifs_label.open(labels);
@@ -41,10 +59,18 @@ private:
   vector<int> inner_layer_dims;
   // first dim is layer, second dim is neuron
   float ** inner_layer;
-  // first dim is layer, second dim is output neuron, third dim is input neuron
-  float *** weights;
+  // first dim is layer, second dim is neuron
+  float ** inner_layer_errors;
   // BLAS stuff
   float inner_product(int n,float * v1,float * v2);
   float logistic_function(float x);
+  float logistic_derivative_function(float x);
+  // optimization stuff
+  static const float learning_rate = .01;
+
+  // this is a global variable
+  // first dim is layer, second dim is output neuron, third dim is input neuron
+  //float *** weights;
+  model_t * model;
 
 };
